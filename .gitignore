@@ -1,0 +1,9 @@
+node_modules
+dist
+.DS_Store
+src-tauri/target
+src-tauri/gen
+release/*.exe
+release/*.zip
+release/*.dmg
+release/SHA256SUMS.txt
