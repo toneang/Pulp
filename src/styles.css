@@ -4,6 +4,46 @@
   gap: 3px;
 }
 
+.notes-directory {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  user-select: text;
+}
+
+.editor, .preview { font-size: var(--note-font-size, 13px) !important; }
+.history-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow-y: auto;
+  padding: 14px;
+  background: var(--paper);
+}
+.history-panel[hidden] { display: none; }
+.history-heading { display: flex; justify-content: space-between; align-items: center; }
+.history-panel p { margin: 8px 0 12px; color: var(--ink-soft); }
+.history-entry {
+  display: block;
+  width: 100%;
+  padding: 10px 6px;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+}
+.history-entry:hover { background: var(--paper-edge); }
+.history-entry strong, .history-entry span { display: block; overflow-wrap: anywhere; }
+.history-entry span { margin-top: 4px; color: var(--ink-soft); font-size: 11px; }
+
 .toolbar {
   flex-wrap: wrap;
 }
@@ -168,8 +208,8 @@ body.is-maximized .sheet {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  height: 30px;
-  padding: 0 6px 0 8px;
+  min-height: 30px;
+  padding: 4px 6px 4px 8px;
   border-bottom: 1px solid var(--rule);
   background: var(--paper);
 }
@@ -359,7 +399,7 @@ body.is-maximized .sheet {
 
 /* 占位文字脱离文档流，免得把首行光标挤下去 */
 .preview.is-blank[contenteditable="true"]::before {
-  content: "随手写点什么…";
+  content: attr(data-placeholder);
   position: absolute;
   color: var(--accent);
   pointer-events: none;
@@ -385,6 +425,7 @@ body.is-maximized .sheet {
 
 .setting-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;

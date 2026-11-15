@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import TurndownService from "turndown";
@@ -14,6 +15,7 @@ import {
   runCommand,
 } from "./editing.js";
 import "katex/dist/katex.min.css";
+import { errorText, getLanguage, setLanguage, t } from "./i18n.js";
 
 const appWindow = getCurrentWindow();
 const statusEl = document.getElementById("status");
@@ -29,9 +31,92 @@ const shortcutFeedback = document.getElementById("shortcut-feedback");
 const formatSelect = document.getElementById("default-format");
 const autostartCheck = document.getElementById("autostart");
 const autostartFeedback = document.getElementById("autostart-feedback");
+const languageSelect = document.getElementById("language-select");
+const notesDirectory = document.getElementById("notes-directory");
+const directoryFeedback = document.getElementById("directory-feedback");
+const chooseDirectoryButton = document.getElementById("choose-notes-directory");
+let currentNotePath = null;
+
+let noteFontSize = 13;
+try {
+  const stored = Number(localStorage.getItem("pulp-font-size"));
+  if (Number.isFinite(stored) && stored >= 10 && stored <= 32) noteFontSize = stored;
+} catch {}
+
+function changeFontSize(delta) {
+  noteFontSize = Math.min(32, Math.max(10, noteFontSize + delta));
+  document.documentElement.style.setProperty("--note-font-size", `${noteFontSize}px`);
+  try { localStorage.setItem("pulp-font-size", String(noteFontSize)); } catch {}
+}
+changeFontSize(0);
+document.getElementById("font-smaller").addEventListener("click", () => changeFontSize(-1));
+document.getElementById("font-larger").addEventListener("click", () => changeFontSize(1));
+document.addEventListener("wheel", (event) => {
+  if (!(event.ctrlKey || event.metaKey) || event.deltaY === 0 || recording) return;
+  event.preventDefault();
+  changeFontSize(event.deltaY < 0 ? 1 : -1);
+}, { passive: false });
+listen("tray-quit", quitAfterSave).catch(setStatus);
+
+const historyPanel = document.getElementById("history-panel");
+const historyList = document.getElementById("history-list");
+document.getElementById("history-close").addEventListener("click", () => {
+  historyPanel.hidden = true;
+  focusActiveSurface();
+});
+document.getElementById("btn-history").addEventListener("click", async () => {
+  historyPanel.hidden = false;
+  historyList.textContent = t("正在读取…");
+  try {
+    const notes = await invoke("list_archives");
+    historyList.replaceChildren();
+    if (!notes.length) historyList.textContent = t("暂无历史笔记。点击新建后，原笔记会出现在这里。");
+    for (const note of notes) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "history-entry";
+      const title = document.createElement("strong");
+      title.textContent = note.content.split("\n").find((line) => line.trim())?.replace(/^#+\s*/, "").slice(0, 60) || t("无标题笔记");
+      const detail = document.createElement("span");
+      const milliseconds = Number(BigInt(note.id) / 1000000n);
+      detail.textContent = t("{date} · {count} 字", { date: new Date(milliseconds).toLocaleString(getLanguage() === "en" ? "en-US" : "zh-CN"), count: [...note.content].length });
+      button.append(title, detail);
+      button.addEventListener("click", async () => {
+        const sheet = document.querySelector(".sheet");
+        sheet.inert = true;
+        try {
+          const content = currentContent();
+          if (!(await saveNow())) throw new Error(t("当前笔记未保存，已取消切换"));
+          clearTimeout(saveTimer);
+          const opened = await invoke("open_archive", {
+            id: note.id,
+            current: { content, format, file_path: currentNotePath },
+          });
+          currentNotePath = opened.file_path ?? null;
+          previewEl.hidden = true;
+          editorEl.value = opened.content;
+          settingsOpen = false;
+          viewMode = "preview";
+          setFormat(opened.format, { persist: false });
+          updateCounter();
+          historyPanel.hidden = true;
+          flashStatus(t("已打开历史笔记"));
+        } catch (error) {
+          setStatus(t("打开失败：{error}", { error: errorText(error) }));
+        } finally {
+          sheet.inert = false;
+          focusActiveSurface();
+        }
+      });
+      historyList.appendChild(button);
+    }
+  } catch (error) {
+    historyList.textContent = t("读取历史失败：{error}", { error: errorText(error) });
+  }
+});
 
 function setStatus(text) {
-  if (statusEl) statusEl.textContent = text;
+  if (statusEl) statusEl.textContent = errorText(text);
 }
 
 function currentContent() {
@@ -50,7 +135,7 @@ async function syncPinButton() {
   const pinned = await appWindow.isAlwaysOnTop();
   pinButton.setAttribute("aria-pressed", String(pinned));
   pinButton.classList.toggle("is-active", pinned);
-  pinButton.title = pinned ? "取消置顶" : "置于所有窗口之上";
+  pinButton.title = pinned ? t("取消置顶") : t("置于所有窗口之上");
 }
 
 pinButton.addEventListener("click", async () => {
@@ -60,7 +145,7 @@ pinButton.addEventListener("click", async () => {
     await appWindow.setAlwaysOnTop(!(await appWindow.isAlwaysOnTop()));
     await syncPinButton();
   } catch (error) {
-    setStatus(`置顶设置失败：${error}`);
+    setStatus(t("置顶设置失败：{error}", { error: errorText(error) }));
   } finally {
     pinBusy = false;
   }
@@ -71,12 +156,13 @@ document.getElementById("btn-new").addEventListener("click", async () => {
   try {
     const content = currentContent();
     sheet.inert = true;
-    await saveNow();
+    if (!(await saveNow())) throw new Error(t("当前笔记未保存，已取消新建"));
     clearTimeout(saveTimer);
-    await invoke("new_note", {
-      note: { content, format },
+    const created = await invoke("new_note", {
+      note: { content, format, file_path: currentNotePath },
       nextFormat: settings.default_format,
     });
+    currentNotePath = created.file_path ?? null;
     previewEl.hidden = true;
     editorEl.value = "";
     settingsOpen = false;
@@ -84,9 +170,9 @@ document.getElementById("btn-new").addEventListener("click", async () => {
     closeTablePicker();
     setFormat(settings.default_format, { persist: false });
     updateCounter();
-    flashStatus(content.trim() ? "已新建，原笔记已归档" : "已新建");
+    flashStatus(content.trim() ? t("已新建，原笔记已归档") : t("已新建"));
   } catch (error) {
-    setStatus(`新建失败：${error}`);
+    setStatus(t("新建失败：{error}", { error: errorText(error) }));
   } finally {
     sheet.inert = false;
     focusActiveSurface();
@@ -96,9 +182,9 @@ document.getElementById("btn-new").addEventListener("click", async () => {
 document.getElementById("btn-export-md").addEventListener("click", async () => {
   try {
     const exported = await invoke("export_markdown", { content: currentContent() });
-    if (exported) flashStatus("Markdown 已导出");
+    if (exported) flashStatus(t("Markdown 已导出"));
   } catch (error) {
-    setStatus(String(error));
+    setStatus(errorText(error));
   }
 });
 
@@ -118,9 +204,9 @@ document.getElementById("btn-export-pdf").addEventListener("click", async () => 
     }
     await document.fonts.ready;
     await invoke("print_note");
-    flashStatus("在打印面板中选择另存为 PDF");
+    flashStatus(t("在打印面板中选择另存为 PDF"));
   } catch (error) {
-    setStatus(String(error));
+    setStatus(errorText(error));
   }
 });
 
@@ -140,8 +226,12 @@ document.getElementById("btn-hide")?.addEventListener("click", () => {
 
 // 退出按钮真正结束进程，区别于隐藏
 document.getElementById("btn-quit")?.addEventListener("click", () => {
-  saveNow().finally(() => invoke("quit_app"));
+  quitAfterSave();
 });
+
+async function quitAfterSave() {
+  if (await saveNow()) await invoke("quit_app");
+}
 
 // 标题栏空白处双击 = 最大化 / 还原
 document.querySelector(".titlebar")?.addEventListener("dblclick", (event) => {
@@ -178,6 +268,23 @@ syncMaximized();
 document.addEventListener("keydown", (event) => {
   // 录制快捷键时让输入框独占按键
   if (recording) return;
+  if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+    const increase = event.key === "+" || event.key === "=" || event.code === "NumpadAdd";
+    const decrease = (event.key === "-" && !event.shiftKey) || event.code === "NumpadSubtract";
+    if (increase || decrease) {
+      event.preventDefault();
+      changeFontSize(increase ? 1 : -1);
+      return;
+    }
+  }
+  if (!historyPanel.hidden) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      historyPanel.hidden = true;
+      focusActiveSurface();
+    }
+    return;
+  }
 
   // 表格选择器开着时独占按键
   if (handleTablePickerKey(event)) {
@@ -252,8 +359,6 @@ const FORMAT_SHORTCUTS = [
   { key: "m", mod: true, command: "math" },
   { key: "m", mod: true, shift: true, command: "mathblock" },
   { key: "-", mod: true, shift: true, command: "hr" },
-  { key: "=", mod: true, command: "heading-up" },
-  { key: "-", mod: true, command: "heading-down" },
 ];
 
 function runFormatShortcut(event, mod) {
@@ -297,7 +402,7 @@ let saveTimer = null;
 let statusTimer = null;
 let settingsOpen = false;
 let recording = false;
-let settings = { shortcut: "CmdOrCtrl+Shift+P", default_format: "markdown", autostart: false };
+let settings = { language: "zh", shortcut: "CmdOrCtrl+Shift+P", default_format: "markdown", autostart: false, notes_directory: "" };
 const editingContext = { previewEl, editorEl };
 
 /* ---------- 表格尺寸选择器 ---------- */
@@ -331,7 +436,7 @@ function highlightTableSize(rows, cols) {
     cell.classList.toggle("is-on", within);
   }
   // 标注的是内容行数，表头单独算，和用户心里的"几行几列"一致
-  tablePickerLabel.textContent = `${tableRows} 行 × ${tableCols} 列`;
+  tablePickerLabel.textContent = t("{rows} 行 × {cols} 列", { rows: tableRows, cols: tableCols });
 }
 
 function openTablePicker() {
@@ -350,7 +455,7 @@ function confirmTableSize() {
   const cols = tableCols;
   closeTablePicker();
   // 表头用占位名，省得插进去还要先想列名
-  const headers = Array.from({ length: cols }, (_, index) => `列 ${index + 1}`);
+  const headers = Array.from({ length: cols }, (_, index) => t("列 {index}", { index: index + 1 }));
   runCommand("table", editingContext, { headers, rows });
 }
 
@@ -513,13 +618,13 @@ function updateCounter() {
   const text = editorEl.value;
   const chars = [...text].length;
   const lines = text === "" ? 0 : text.split("\n").length;
-  counterEl.textContent = `${chars} 字 · ${lines} 行`;
+  counterEl.textContent = t("{chars} 字 · {lines} 行", { chars, lines });
 }
 
-function flashStatus(text, revertTo = "就绪") {
+function flashStatus(text, revertTo = null) {
   setStatus(text);
   clearTimeout(statusTimer);
-  statusTimer = setTimeout(() => setStatus(revertTo), 1200);
+  statusTimer = setTimeout(() => setStatus(revertTo ?? t("就绪")), 1200);
 }
 
 /* ---------- 持久化 ---------- */
@@ -539,11 +644,13 @@ async function saveNow() {
   }
   try {
     await invoke("save_note", {
-      note: { content: editorEl.value, format },
+      note: { content: editorEl.value, format, file_path: currentNotePath },
     });
-    flashStatus("已保存");
+    flashStatus(t("已保存"));
+    return true;
   } catch (error) {
-    setStatus(`保存失败：${error}`);
+    setStatus(t("保存失败：{error}", { error: errorText(error) }));
+    return false;
   }
 }
 
@@ -639,10 +746,10 @@ function applyView() {
   document.body.classList.toggle("is-settings", settingsOpen);
   document.body.classList.toggle("is-preview", showPreview);
   settingsBtn.classList.toggle("is-active", settingsOpen);
-  settingsBtn.title = settingsOpen ? "返回编辑 (Ctrl+,)" : "设置 (Ctrl+,)";
+  settingsBtn.title = settingsOpen ? t("返回编辑 (Ctrl+,)") : t("设置 (Ctrl+,)");
 
   // 按钮写的是"点下去会到哪里"，和 Typora 左下角一个意思
-  viewToggleLabel.textContent = showPreview ? "源码" : "渲染";
+  viewToggleLabel.textContent = showPreview ? t("源码") : t("渲染");
   viewToggleBtn.classList.toggle("is-source", !showPreview);
 
   if (showPreview) renderPreview();
@@ -762,8 +869,8 @@ function stopRecording() {
 shortcutInput.addEventListener("focus", () => {
   recording = true;
   shortcutInput.classList.add("is-recording");
-  shortcutInput.value = "按下组合键…";
-  setShortcutFeedback("按 Esc 取消录制。");
+  shortcutInput.value = t("按下组合键…");
+  setShortcutFeedback(t("按 Esc 取消录制。"));
 });
 
 shortcutInput.addEventListener("blur", stopRecording);
@@ -777,28 +884,28 @@ shortcutInput.addEventListener("keydown", async (event) => {
 
   if (event.key === "Escape") {
     shortcutInput.blur();
-    setShortcutFeedback("已取消，快捷键未改动。");
+    setShortcutFeedback(t("已取消，快捷键未改动。"));
     return;
   }
 
   const accelerator = acceleratorFromEvent(event);
   if (!accelerator) {
-    setShortcutFeedback("需要至少一个修饰键（Ctrl / Alt / Shift / Cmd）。", "error");
+    setShortcutFeedback(t("需要至少一个修饰键（Ctrl / Alt / Shift / Cmd）。"), "error");
     return;
   }
 
   if (accelerator === settings.shortcut) {
     shortcutInput.blur();
-    setShortcutFeedback("与当前快捷键相同，未改动。");
+    setShortcutFeedback(t("与当前快捷键相同，未改动。"));
     return;
   }
 
   shortcutInput.value = prettyAccelerator(accelerator);
-  setShortcutFeedback("正在注册…");
+  setShortcutFeedback(t("正在注册…"));
 
   const ok = await persistSettings({ shortcut: accelerator });
   if (ok) {
-    setShortcutFeedback(`已生效：${prettyAccelerator(accelerator)}`, "ok");
+    setShortcutFeedback(t("已生效：{shortcut}", { shortcut: prettyAccelerator(accelerator) }), "ok");
   }
   shortcutInput.blur();
 });
@@ -813,7 +920,7 @@ autostartCheck.addEventListener("change", async () => {
   autostartFeedback.classList.remove("is-error", "is-ok");
   const ok = await persistSettings({ autostart: wanted });
   if (ok) {
-    autostartFeedback.textContent = wanted ? "已加入开机启动。" : "已取消开机启动。";
+    autostartFeedback.textContent = wanted ? t("已加入开机启动。") : t("已取消开机启动。");
     autostartFeedback.classList.add("is-ok");
   } else {
     autostartCheck.checked = !wanted;
@@ -823,11 +930,11 @@ autostartCheck.addEventListener("change", async () => {
 document.getElementById("btn-reset-shortcut").addEventListener("click", async () => {
   const fallback = "CmdOrCtrl+Shift+P";
   if (settings.shortcut === fallback) {
-    setShortcutFeedback("当前已是默认快捷键。");
+    setShortcutFeedback(t("当前已是默认快捷键。"));
     return;
   }
   const ok = await persistSettings({ shortcut: fallback });
-  if (ok) setShortcutFeedback(`已恢复默认：${prettyAccelerator(fallback)}`, "ok");
+  if (ok) setShortcutFeedback(t("已恢复默认：{shortcut}", { shortcut: prettyAccelerator(fallback) }), "ok");
 });
 
 /** 把改动合并进设置并落盘；失败时回滚界面并提示 */
@@ -837,13 +944,13 @@ async function persistSettings(patch) {
     const saved = await invoke("save_settings", { settings: next });
     settings = saved;
     syncSettingsUI();
-    flashStatus("设置已保存");
+    flashStatus(t("设置已保存"));
     return true;
   } catch (error) {
     syncSettingsUI();
-    setShortcutFeedback(String(error), "error");
+    setShortcutFeedback(errorText(error), "error");
     if (patch.autostart !== undefined) {
-      autostartFeedback.textContent = String(error);
+      autostartFeedback.textContent = errorText(error);
       autostartFeedback.classList.add("is-error");
     }
     return false;
@@ -851,10 +958,48 @@ async function persistSettings(patch) {
 }
 
 function syncSettingsUI() {
+  setLanguage(settings.language ?? "zh");
+  languageSelect.value = getLanguage();
   shortcutInput.value = prettyAccelerator(settings.shortcut);
   formatSelect.value = settings.default_format;
   autostartCheck.checked = settings.autostart;
+  notesDirectory.value = settings.notes_directory || t("系统默认（应用数据目录下的 notes 文件夹）");
+  notesDirectory.title = notesDirectory.value;
 }
+
+languageSelect.addEventListener("change", async () => {
+  languageSelect.disabled = true;
+  try {
+    if (!(await persistSettings({ language: languageSelect.value }))) return;
+    applyView();
+    updateCounter();
+    highlightTableSize(tableRows, tableCols);
+    syncPinButton().catch(setStatus);
+    shortcutFeedback.textContent = t("点击输入框后直接按组合键，需至少一个修饰键。");
+    directoryFeedback.textContent = t("仅对之后新建的笔记生效，Markdown 保存为 .md，纯文本保存为 .txt。");
+    autostartFeedback.textContent = "";
+  } finally {
+    languageSelect.disabled = false;
+  }
+});
+
+chooseDirectoryButton.addEventListener("click", async () => {
+  chooseDirectoryButton.disabled = true;
+  directoryFeedback.textContent = "";
+  try {
+    const selected = await invoke("choose_notes_directory");
+    if (!selected) return;
+    if (!(await persistSettings({ notes_directory: selected }))) {
+      directoryFeedback.textContent = t("保存失败，请检查文件夹权限后重试。");
+      return;
+    }
+    directoryFeedback.textContent = t("已设置，之后新建的笔记会保存到此文件夹。已有笔记位置不变。");
+  } catch (error) {
+    directoryFeedback.textContent = t("设置失败：{error}", { error: errorText(error) });
+  } finally {
+    chooseDirectoryButton.disabled = false;
+  }
+});
 
 function toggleSettings() {
   settingsOpen = !settingsOpen;
@@ -868,7 +1013,6 @@ settingsBtn.addEventListener("click", toggleSettings);
 /* ---------- 初始化 ---------- */
 
 async function init() {
-  syncPinButton().catch((error) => setStatus(String(error)));
   // 设置要先读，因为新笔记的格式取决于默认格式
   try {
     settings = await invoke("load_settings");
@@ -877,8 +1021,11 @@ async function init() {
   }
   syncSettingsUI();
 
+  syncPinButton().catch((error) => setStatus(errorText(error)));
+
   try {
     const note = await invoke("load_note");
+    currentNotePath = note.file_path ?? null;
     editorEl.value = note.content ?? "";
     // 已有笔记沿用它自己的格式；空笔记按设置里的默认格式开
     const isNewNote = (note.content ?? "") === "";
@@ -888,23 +1035,23 @@ async function init() {
     setFormat(initialFormat, { persist: false });
   } catch (error) {
     setFormat(settings.default_format, { persist: false });
-    setStatus(`读取笔记失败：${error}`);
+    setStatus(t("读取笔记失败：{error}", { error: errorText(error) }));
   }
   updateCounter();
 
   try {
     const state = await invoke("shortcut_state");
     if (state.registered) {
-      setStatus("就绪");
+      setStatus(t("就绪"));
     } else {
-      setStatus(`快捷键 ${prettyAccelerator(state.accelerator)} 被占用`);
+      setStatus(t("快捷键 {shortcut} 被占用", { shortcut: prettyAccelerator(state.accelerator) }));
       setShortcutFeedback(
-        `当前快捷键 ${prettyAccelerator(state.accelerator)} 注册失败，请换一个组合。`,
+        t("当前快捷键 {shortcut} 注册失败，请换一个组合。", { shortcut: prettyAccelerator(state.accelerator) }),
         "error",
       );
     }
   } catch (error) {
-    setStatus(String(error));
+    setStatus(errorText(error));
   }
 
   if (previewEl.hidden) editorEl.focus();

@@ -2,6 +2,7 @@
    渲染态直接操作 DOM（光标由浏览器自然维护），源码态操作文本。 */
 
 import katex from "katex";
+import { t } from "./i18n.js";
 
 const BLOCK_TAGS = new Set([
   "P", "H1", "H2", "H3", "H4", "H5", "H6",
@@ -173,7 +174,7 @@ function emptyParagraph() {
 /* ---------- 输入即转换（Typora 风格） ---------- */
 
 /** 行首标记：光标前整段文字匹配时，把这一块变成对应结构。
-    每条规则只在"刚敲下触发键"的那一刻跑一次。 */
+    每条规则只在“刚敲下触发键”的那一刻跑一次。 */
 const LINE_RULES = [
   {
     // ### 三级标题
@@ -741,7 +742,7 @@ function applyPreviewCommand(command, root, payload) {
       return true;
     }
     case "link": {
-      const text = range.toString() || "链接";
+      const text = range.toString() || t("链接");
       const anchor = document.createElement("a");
       anchor.href = payload ?? "https://";
       anchor.textContent = text;
@@ -817,7 +818,7 @@ function applyPreviewCommand(command, root, payload) {
     }
     case "table": {
       if (!block) return false;
-      const table = buildTable(payload?.headers ?? ["列 1", "列 2", "列 3"], payload?.rows ?? 1);
+      const table = buildTable(payload?.headers ?? [t("列 1"), t("列 2"), t("列 3")], payload?.rows ?? 1);
       block.replaceWith(table);
       const tail = emptyParagraph();
       table.after(tail);
@@ -918,13 +919,13 @@ function replaceLines(textarea, text, caretOffset) {
 function applySourceCommand(command, textarea, payload) {
   switch (command) {
     case "bold":
-      wrapSelection(textarea, "**", "**", "加粗文字");
+      wrapSelection(textarea, "**", "**", t("加粗文字"));
       return true;
     case "italic":
-      wrapSelection(textarea, "*", "*", "斜体文字");
+      wrapSelection(textarea, "*", "*", t("斜体文字"));
       return true;
     case "strike":
-      wrapSelection(textarea, "~~", "~~", "删除线");
+      wrapSelection(textarea, "~~", "~~", t("删除线"));
       return true;
     case "code":
       wrapSelection(textarea, "`", "`", "code");
@@ -934,7 +935,7 @@ function applySourceCommand(command, textarea, payload) {
       return true;
     case "link": {
       const { selectionStart: start, selectionEnd: end, value } = textarea;
-      const text = value.slice(start, end) || "链接文字";
+      const text = value.slice(start, end) || t("链接文字");
       const snippet = `[${text}](${payload ?? "https://"})`;
       textarea.value = value.slice(0, start) + snippet + value.slice(end);
       textarea.selectionStart = start + text.length + 3;
@@ -992,7 +993,7 @@ function applySourceCommand(command, textarea, payload) {
       replaceLines(textarea, "\n---\n");
       return true;
     case "table": {
-      const headers = payload?.headers ?? ["列 1", "列 2", "列 3"];
+      const headers = payload?.headers ?? [t("列 1"), t("列 2"), t("列 3")];
       const rows = Math.max(1, payload?.rows ?? 1);
       const head = `| ${headers.join(" | ")} |`;
       const rule = `| ${headers.map(() => "---").join(" | ")} |`;

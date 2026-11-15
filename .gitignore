@@ -7,3 +7,4 @@ release/*.exe
 release/*.zip
 release/*.dmg
 release/SHA256SUMS.txt
+release/SHA256SUMS-*.txt

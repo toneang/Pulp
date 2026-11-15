@@ -8,7 +8,18 @@ fi
 pnpm install --frozen-lockfile
 pnpm tauri build --bundles app,dmg
 mkdir -p release
-chip="$(uname -m)"
-ditto -c -k --sequesterRsrc --keepParent src-tauri/target/release/bundle/macos/Pulp.app "release/Pulp-macos-${chip}.app.zip"
-cp src-tauri/target/release/bundle/dmg/*.dmg release/
+version="$(node -p "require('./package.json').version")"
+case "$(uname -m)" in
+  arm64) chip=apple-silicon ;;
+  x86_64) chip=intel ;;
+  *) echo "Unsupported Mac architecture" >&2; exit 1 ;;
+esac
+ditto -c -k --sequesterRsrc --keepParent src-tauri/target/release/bundle/macos/Pulp.app "release/Pulp-$version-macos-$chip.app.zip"
+for dmg in src-tauri/target/release/bundle/dmg/*.dmg; do
+  cp "$dmg" "release/Pulp-$version-macos-$chip.dmg"
+done
+(
+  cd release
+  shasum -a 256 "Pulp-$version-macos-$chip.app.zip" "Pulp-$version-macos-$chip.dmg" > "SHA256SUMS-macos-$chip-$version.txt"
+)
 echo "Packages saved to release/"
